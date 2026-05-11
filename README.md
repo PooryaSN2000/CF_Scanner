@@ -1,3 +1,4 @@
+---
 
 # 🚀 True Latency Xray IP Scanner
 
@@ -10,10 +11,11 @@ Unlike standard ICMP ping tools or basic TCP socket checkers, this script **spaw
 ## ✨ Features
 
 * **🎯 True Proxy Latency:** Tests actual proxy connections by routing an HTTP request (via local proxy) through the Xray core, giving you the real-world delay.
+* **🔗 Auto-Generated Share Links:** Automatically extracts your UUID, SNI, and paths to create ready-to-use `vless://` URLs. Just copy and paste them directly into v2rayN, v2rayNG, or Nekobox!
 * **🛡️ Default Sanity Check:** Automatically tests your default `config.json` IP first to ensure your UUID, SNI, and paths are correct before wasting time scanning thousands of IPs.
 * **🧠 Dynamic Config Injection:** Deep-copies your base configuration and securely swaps the target address and local ports in memory.
 * **⚡ Resource Managed:** Runs a controlled number of concurrent Xray subprocesses to prevent system freezing, automatically cleaning up temporary JSON files and dead processes.
-* **📦 Cross-Platform:** Works on Windows, Linux, and macOS (just point it to the correct Xray executable).
+* **📦 Zero Dependencies:** Built entirely with Python's standard library. No `requirements.txt` or `pip install` needed—just download and run!
 
 ---
 
@@ -55,6 +57,10 @@ python cf_scanner.py
 
 ```
 
+### 5. Import to your Client
+
+Once the scan is finished, open the newly created **`vless_links.txt`** file. Highlight all the text, copy it, and paste it directly into your client (e.g., `Ctrl+V` in v2rayN) to instantly import your fastest IPs!
+
 ---
 
 ## ⚙️ Configuration
@@ -64,7 +70,8 @@ You can customize the script's behavior by editing the variables at the top of `
 | Variable | Default | Description |
 | --- | --- | --- |
 | `FILE_NAME` | `'export.ipv4'` | The input file containing your CIDR ranges. |
-| `OUTPUT_FILE` | `'working_ips.txt'` | The file where the working, sorted IPs will be saved. |
+| `OUTPUT_FILE` | `'working_ips.txt'` | The file where the raw working IPs and latencies are saved. |
+| `LINKS_FILE` | `'vless_links.txt'` | The file where the auto-generated `vless://` share URLs are saved for quick import. |
 | `CONFIG_TEMPLATE_FILE` | `'config.json'` | Your base Xray configuration file. |
 | `XRAY_PATH` | `'Xray-windows-64\\xray.exe'` | Path to your Xray executable. |
 | `TARGET_WORKING_IPS` | `5` | The script halts automatically once it finds this many working IPs. |
@@ -100,7 +107,8 @@ IP Address           | Latency
 172.64.19.2          | 285ms
 104.18.2.14          | 310ms
 ==================================================
-[*] Done. Results saved to working_ips.txt
+[*] Done. Raw IPs saved to working_ips.txt
+[*] Done. Copy-Paste Configs saved to vless_links.txt <--- IMPORT THESE!
 
 ```
 

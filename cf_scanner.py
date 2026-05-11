@@ -8,13 +8,15 @@ import subprocess
 import json
 import os
 import urllib.request
+import urllib.parse
 import copy
 
 # --- Configuration ---
 FILE_NAME = 'export.ipv4'
 OUTPUT_FILE = 'working_ips.txt'
+LINKS_FILE = 'vless_links.txt'       # New file for copy-paste configs
 CONFIG_TEMPLATE_FILE = 'config.json' 
-XRAY_PATH = 'Xray-windows-64\\xray.exe' # Ensure this is correct
+XRAY_PATH = 'Xray-windows-64\\xray.exe' 
 
 TARGET_WORKING_IPS = 5         
 SAMPLES_PER_SUBNET = 2          
@@ -39,7 +41,7 @@ def load_base_config():
 def generate_test_config(base_config, ip, local_port):
     test_config = copy.deepcopy(base_config)
     
-    # --- FIX 1: Remove DNS to prevent geosite.dat / geoip.dat crashes ---
+    # Remove DNS to prevent geosite.dat / geoip.dat crashes
     if "dns" in test_config:
         del test_config["dns"]
 
@@ -50,7 +52,6 @@ def generate_test_config(base_config, ip, local_port):
         "settings": {"timeout": 0}
     }]
     
-    # Target the VLESS outbound
     found = False
     for outbound in test_config.get("outbounds", []):
         if outbound.get("protocol") == "vless":
@@ -65,6 +66,51 @@ def generate_test_config(base_config, ip, local_port):
         "rules": [{"type": "field", "port": "0-65535", "outboundTag": test_config["outbounds"][0]["tag"]}]
     }
     return test_config
+
+def generate_vless_url(ip, latency, base_config):
+    """Dynamically generates a vless:// share link from your config.json"""
+    try:
+        outbound = None
+        for out in base_config.get("outbounds", []):
+            if out.get("protocol") == "vless":
+                outbound = out
+                break
+        if not outbound:
+            outbound = base_config["outbounds"][0]
+
+        vnext = outbound["settings"]["vnext"][0]
+        uuid = vnext["users"][0]["id"]
+        port = vnext["port"]
+        
+        stream = outbound.get("streamSettings", {})
+        network = stream.get("network", "ws")
+        security = stream.get("security", "tls")
+        
+        sni = ""
+        if security == "tls":
+            sni = stream.get("tlsSettings", {}).get("serverName", "")
+        
+        path = ""
+        host = ""
+        if network == "ws":
+            path = stream.get("wsSettings", {}).get("path", "")
+            host = stream.get("wsSettings", {}).get("host", sni)
+
+        # Build the URL query parameters safely
+        query_params = []
+        query_params.append("encryption=none")
+        query_params.append(f"security={security}")
+        if sni: query_params.append(f"sni={urllib.parse.quote(sni)}")
+        query_params.append(f"type={network}")
+        if host: query_params.append(f"host={urllib.parse.quote(host)}")
+        if path: query_params.append(f"path={urllib.parse.quote(path, safe='')}")
+        
+        query_string = "&".join(query_params)
+        remark = urllib.parse.quote(f"CF-{ip} ({latency}ms)")
+        
+        return f"vless://{uuid}@{ip}:{port}?{query_string}#{remark}"
+    except Exception as e:
+        return f"# Error generating link for {ip}: {e}"
 
 def get_random_ips(filename, samples_per_subnet):
     ips_to_test = []
@@ -86,14 +132,12 @@ def get_random_ips(filename, samples_per_subnet):
         print(f"[!] Error: {filename} not found.")
         sys.exit(1)
     random.shuffle(ips_to_test)
-    return ips_to_test[:100] # Change this back once it works
+    return ips_to_test[:20] # Adjust this for your real scan!
 
 def xray_ping(ip, base_config, is_default=False):
     label = "[DEFAULT-CHECK]" if is_default else f"[SCAN]"
     local_port = get_free_port()
     config_path = f"temp_{local_port}.json"
-    
-    # --- FIX 2: Use absolute path for config so Xray can find it ---
     abs_config_path = os.path.abspath(config_path)
     
     config_data = generate_test_config(base_config, ip, local_port)
@@ -105,10 +149,7 @@ def xray_ping(ip, base_config, is_default=False):
     
     proc = None
     try:
-        # Get the directory where Xray is located
         xray_dir = os.path.dirname(os.path.abspath(XRAY_PATH))
-        
-        # --- FIX 3: Capture both STDOUT and STDERR to see the exact crash reason ---
         proc = subprocess.Popen(
             [os.path.abspath(XRAY_PATH), "run", "-c", abs_config_path], 
             cwd=xray_dir, 
@@ -120,7 +161,7 @@ def xray_ping(ip, base_config, is_default=False):
         time.sleep(1.0) 
         if proc.poll() is not None:
             stdout_logs, stderr_logs = proc.communicate()
-            error_msg = stderr_logs.strip() or stdout_logs.strip() or "Unknown Error (Check Path or Permissions)"
+            error_msg = stderr_logs.strip() or stdout_logs.strip() or "Unknown Error"
             print(f"{label} {ip}: Xray crashed! Error:\n{error_msg}")
             return None
 
@@ -157,7 +198,6 @@ def main():
     print("="*50)
     print("STEP 1: Testing your default config.json address...")
     try:
-        # Attempt to find the default IP for the check
         found_ip = False
         for out in base_config.get("outbounds", []):
             if out.get("protocol") == "vless":
@@ -202,12 +242,20 @@ def main():
     print("\n" + "="*50)
     print(f"{'IP Address':<20} | {'Latency'}")
     print("-" * 50)
-    with open(OUTPUT_FILE, 'w') as f:
+    
+    # Save standard IPs
+    with open(OUTPUT_FILE, 'w') as f_ip, open(LINKS_FILE, 'w') as f_links:
         for ip, lat in working_ips:
             print(f"{ip:<20} | {lat}ms")
-            f.write(f"{ip}\n")
+            f_ip.write(f"{ip}\n")
+            
+            # Generate and save the VLESS Share Link
+            vless_url = generate_vless_url(ip, lat, base_config)
+            f_links.write(f"{vless_url}\n")
+            
     print("="*50)
-    print(f"[*] Done. Results saved to {OUTPUT_FILE}")
+    print(f"[*] Done. Raw IPs saved to {OUTPUT_FILE}")
+    print(f"[*] Done. Copy-Paste Configs saved to {LINKS_FILE} <--- IMPORT THESE!")
 
 if __name__ == '__main__':
     main()

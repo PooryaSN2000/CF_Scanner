@@ -1,6 +1,7 @@
 # Ignore Xray configs and executables
 config.json
 temp_*.json
+vless_links.txt
 # Xray-windows-64/
 # xray.exe
 # xray
