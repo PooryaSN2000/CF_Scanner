@@ -74,6 +74,7 @@ You can customize the script's behavior by editing the variables at the top of `
 | `LINKS_FILE` | `'vless_links.txt'` | The file where the auto-generated `vless://` share URLs are saved for quick import. |
 | `CONFIG_TEMPLATE_FILE` | `'config.json'` | Your base Xray configuration file. |
 | `XRAY_PATH` | `'Xray-windows-64\\xray.exe'` | Path to your Xray executable. |
+| `MAX_IPS_TO_TEST` | `100` | Maximum number of total IPs to test. Set to 0 to test all generated IPs. |
 | `TARGET_WORKING_IPS` | `5` | The script halts automatically once it finds this many working IPs. |
 | `SAMPLES_PER_SUBNET` | `2` | Number of random IPs to mathematically sample from *each* subnet block. |
 | `MAX_THREADS` | `5` | Concurrent Xray instances. *Keep this low (5-15) as spawning full binaries is heavy.* |

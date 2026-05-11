@@ -14,7 +14,7 @@ import copy
 # --- Configuration ---
 FILE_NAME = 'export.ipv4'
 OUTPUT_FILE = 'working_ips.txt'
-LINKS_FILE = 'vless_links.txt'       # New file for copy-paste configs
+LINKS_FILE = 'vless_links.txt'       
 CONFIG_TEMPLATE_FILE = 'config.json' 
 XRAY_PATH = 'Xray-windows-64\\xray.exe' 
 
@@ -22,6 +22,7 @@ TARGET_WORKING_IPS = 5
 SAMPLES_PER_SUBNET = 2          
 MAX_THREADS = 5                 
 TIMEOUT = 5.0                   
+MAX_IPS_TO_TEST = 100           # Maximum number of IPs to test (Set to 0 to test all)
 TEST_URL = "http://cp.cloudflare.com/"
 # ---------------------
 
@@ -131,8 +132,13 @@ def get_random_ips(filename, samples_per_subnet):
     except FileNotFoundError:
         print(f"[!] Error: {filename} not found.")
         sys.exit(1)
+        
     random.shuffle(ips_to_test)
-    return ips_to_test[:20] # Adjust this for your real scan!
+    
+    # Apply the user's limit, or return all if set to 0
+    if MAX_IPS_TO_TEST > 0:
+        return ips_to_test[:MAX_IPS_TO_TEST]
+    return ips_to_test
 
 def xray_ping(ip, base_config, is_default=False):
     label = "[DEFAULT-CHECK]" if is_default else f"[SCAN]"
