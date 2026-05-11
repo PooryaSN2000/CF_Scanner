@@ -1,0 +1,12 @@
+# Ignore Xray configs and executables
+config.json
+temp_*.json
+# Xray-windows-64/
+# xray.exe
+# xray
+
+# Ignore Python cache
+__pycache__/
+
+# Ignore output results (optional, remove if you want to upload the IPs)
+working_ips.txt
