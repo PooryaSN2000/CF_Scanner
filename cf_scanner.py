@@ -10,6 +10,8 @@ import os
 import urllib.request
 import urllib.parse
 import copy
+import threading
+import atexit
 
 # --- Configuration ---
 FILE_NAME = 'export.ipv4'
@@ -17,35 +19,48 @@ OUTPUT_FILE = 'working_ips.txt'
 LINKS_FILE = 'vless_links.txt'       
 CONFIG_TEMPLATE_FILE = 'config.json' 
 XRAY_PATH = 'Xray-windows-64\\xray.exe' 
-
-TARGET_WORKING_IPS = 5         
+TARGET_WORKING_IPS = 5          # How many top/best IPs to save at the end
 SAMPLES_PER_SUBNET = 2          
 MAX_THREADS = 5                 
-TIMEOUT = 5.0                   
-MAX_IPS_TO_TEST = 100           # Maximum number of IPs to test (Set to 0 to test all)
-TEST_URL = "http://cp.cloudflare.com/"
+PING_TIMEOUT = 5.0              
+SPEED_TIMEOUT = 15.0            
+MAX_IPS_TO_TEST = 200           
+
+# Testing Endpoints
+PING_URL = "http://cp.cloudflare.com/"
+SPEED_TEST_URL = "http://speed.cloudflare.com/__down?bytes=150000" 
+BASE_PORT = 20000 
 # ---------------------
 
-def get_free_port():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(('', 0))
-        return s.getsockname()[1]
+print_lock = threading.Lock()
+
+def safe_print(msg):
+    with print_lock:
+        print(msg)
+
+def clean_temp_files():
+    for file in os.listdir('.'):
+        if file.startswith('temp_') and file.endswith('.json'):
+            try:
+                os.remove(file)
+            except Exception:
+                pass
+
+atexit.register(clean_temp_files)
 
 def load_base_config():
     try:
         with open(CONFIG_TEMPLATE_FILE, 'r') as f:
             return json.load(f)
     except Exception as e:
-        print(f"[!] FATAL: Could not load {CONFIG_TEMPLATE_FILE}: {e}")
+        safe_print(f"[!] FATAL: Could not load {CONFIG_TEMPLATE_FILE}: {e}")
         sys.exit(1)
 
 def generate_test_config(base_config, ip, local_port):
     test_config = copy.deepcopy(base_config)
-    
-    # Remove DNS to prevent geosite.dat / geoip.dat crashes
     if "dns" in test_config:
         del test_config["dns"]
-
+        
     test_config["inbounds"] = [{
         "port": local_port,
         "listen": "127.0.0.1",
@@ -59,26 +74,19 @@ def generate_test_config(base_config, ip, local_port):
             outbound["settings"]["vnext"][0]["address"] = ip
             found = True
             break
+            
     if not found:
         test_config["outbounds"][0]["settings"]["vnext"][0]["address"] = ip
-
+        
     test_config["routing"] = {
         "domainStrategy": "AsIs",
         "rules": [{"type": "field", "port": "0-65535", "outboundTag": test_config["outbounds"][0]["tag"]}]
     }
     return test_config
 
-def generate_vless_url(ip, latency, base_config):
-    """Dynamically generates a vless:// share link from your config.json"""
+def generate_vless_url(ip, latency, speed, base_config):
     try:
-        outbound = None
-        for out in base_config.get("outbounds", []):
-            if out.get("protocol") == "vless":
-                outbound = out
-                break
-        if not outbound:
-            outbound = base_config["outbounds"][0]
-
+        outbound = next((out for out in base_config.get("outbounds", []) if out.get("protocol") == "vless"), base_config["outbounds"][0])
         vnext = outbound["settings"]["vnext"][0]
         uuid = vnext["users"][0]["id"]
         port = vnext["port"]
@@ -87,27 +95,17 @@ def generate_vless_url(ip, latency, base_config):
         network = stream.get("network", "ws")
         security = stream.get("security", "tls")
         
-        sni = ""
-        if security == "tls":
-            sni = stream.get("tlsSettings", {}).get("serverName", "")
+        sni = stream.get("tlsSettings", {}).get("serverName", "") if security == "tls" else ""
+        path = stream.get("wsSettings", {}).get("path", "") if network == "ws" else ""
+        host = stream.get("wsSettings", {}).get("host", sni) if network == "ws" else ""
         
-        path = ""
-        host = ""
-        if network == "ws":
-            path = stream.get("wsSettings", {}).get("path", "")
-            host = stream.get("wsSettings", {}).get("host", sni)
-
-        # Build the URL query parameters safely
-        query_params = []
-        query_params.append("encryption=none")
-        query_params.append(f"security={security}")
+        query_params = ["encryption=none", f"security={security}", f"type={network}"]
         if sni: query_params.append(f"sni={urllib.parse.quote(sni)}")
-        query_params.append(f"type={network}")
         if host: query_params.append(f"host={urllib.parse.quote(host)}")
         if path: query_params.append(f"path={urllib.parse.quote(path, safe='')}")
         
         query_string = "&".join(query_params)
-        remark = urllib.parse.quote(f"CF-{ip} ({latency}ms)")
+        remark = urllib.parse.quote(f"CF-{ip} ({latency}ms | {speed:.2f}Mbps)")
         
         return f"vless://{uuid}@{ip}:{port}?{query_string}#{remark}"
     except Exception as e:
@@ -130,59 +128,71 @@ def get_random_ips(filename, samples_per_subnet):
                         ips_to_test.append(str(network.network_address + idx))
                 except ValueError: pass
     except FileNotFoundError:
-        print(f"[!] Error: {filename} not found.")
+        safe_print(f"[!] Error: {filename} not found.")
         sys.exit(1)
         
     random.shuffle(ips_to_test)
-    
-    # Apply the user's limit, or return all if set to 0
     if MAX_IPS_TO_TEST > 0:
         return ips_to_test[:MAX_IPS_TO_TEST]
     return ips_to_test
 
-def xray_ping(ip, base_config, is_default=False):
-    label = "[DEFAULT-CHECK]" if is_default else f"[SCAN]"
-    local_port = get_free_port()
+def xray_test(ip, local_port, base_config, is_default=False):
+    label = "[DEFAULT]" if is_default else "[SCAN]"
     config_path = f"temp_{local_port}.json"
     abs_config_path = os.path.abspath(config_path)
     
     config_data = generate_test_config(base_config, ip, local_port)
-    
     with open(abs_config_path, "w") as f:
         json.dump(config_data, f)
-
-    print(f"{label} {ip}: Starting Xray on port {local_port}...")
-    
+        
     proc = None
     try:
         xray_dir = os.path.dirname(os.path.abspath(XRAY_PATH))
         proc = subprocess.Popen(
             [os.path.abspath(XRAY_PATH), "run", "-c", abs_config_path], 
-            cwd=xray_dir, 
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.PIPE, 
-            text=True
+            cwd=xray_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
         
         time.sleep(1.0) 
         if proc.poll() is not None:
-            stdout_logs, stderr_logs = proc.communicate()
-            error_msg = stderr_logs.strip() or stdout_logs.strip() or "Unknown Error"
-            print(f"{label} {ip}: Xray crashed! Error:\n{error_msg}")
+            safe_print(f"{label} {ip:<15} | Failed (Xray Crash)")
             return None
-
-        start_time = time.time()
+            
         proxy_handler = urllib.request.ProxyHandler({'http': f'http://127.0.0.1:{local_port}'})
         opener = urllib.request.build_opener(proxy_handler)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         
-        with opener.open(TEST_URL, timeout=TIMEOUT) as r:
-            if r.status in [200, 204]:
-                latency = int((time.time() - start_time) * 1000)
-                print(f"{label} {ip}: SUCCESS! Real Latency: {latency}ms")
-                return (ip, latency)
+        # Test 1: Latency (Ping)
+        start_ping = time.time()
+        try:
+            ping_req = urllib.request.Request(PING_URL, headers=headers)
+            with opener.open(ping_req, timeout=PING_TIMEOUT) as r:
+                if r.status not in [200, 204]:
+                    safe_print(f"{label} {ip:<15} | Failed (Bad HTTP Status)")
+                    return None
+        except Exception:
+            safe_print(f"{label} {ip:<15} | Failed (Timeout / No Ping)")
+            return None
+            
+        latency = int((time.time() - start_ping) * 1000)
+
+        # Test 2: Speed (Download)
+        start_speed = time.time()
+        try:
+            speed_req = urllib.request.Request(SPEED_TEST_URL, headers=headers)
+            with opener.open(speed_req, timeout=SPEED_TIMEOUT) as r:
+                data = r.read()
+                bytes_downloaded = len(data)
+        except Exception:
+            safe_print(f"{label} {ip:<15} | Ping: {latency:<4}ms | Failed (Speed Test Timeout)")
+            return None
+            
+        time_taken = time.time() - start_speed
+        speed_mbps = (bytes_downloaded * 8) / (time_taken * 1_000_000)
+
+        safe_print(f"{label} {ip:<15} | Ping: {latency:<4}ms | Speed: {speed_mbps:.2f} Mbps [SUCCESS]")
+        return (ip, latency, speed_mbps)
                 
-    except Exception as e:
-        print(f"{label} {ip}: Failed. ({type(e).__name__})")
     finally:
         if proc:
             proc.terminate()
@@ -190,78 +200,83 @@ def xray_ping(ip, base_config, is_default=False):
             except: proc.kill()
         if os.path.exists(abs_config_path):
             try: os.remove(abs_config_path)
-            except: pass
-
-    return None
+            except: pass 
 
 def main():
+    clean_temp_files()
+    
     if not os.path.exists(XRAY_PATH):
-        print(f"[!] FATAL: Xray not found at: {XRAY_PATH}")
+        safe_print(f"[!] FATAL: Xray not found at: {XRAY_PATH}")
         return
-
+        
     base_config = load_base_config()
     
-    print("="*50)
-    print("STEP 1: Testing your default config.json address...")
-    try:
-        found_ip = False
-        for out in base_config.get("outbounds", []):
-            if out.get("protocol") == "vless":
-                default_ip = out["settings"]["vnext"][0]["address"]
-                found_ip = True
-                break
+    safe_print("="*70)
+    safe_print("STEP 1: Testing default config.json address...")
+    default_ip = None
+    for out in base_config.get("outbounds", []):
+        if out.get("protocol") == "vless":
+            default_ip = out["settings"]["vnext"][0]["address"]
+            break
+    if not default_ip:
+        default_ip = base_config["outbounds"][0]["settings"]["vnext"][0]["address"]
         
-        if not found_ip:
-            default_ip = base_config["outbounds"][0]["settings"]["vnext"][0]["address"]
-
-        print(f"[*] Default IP found in config: {default_ip}")
-        default_result = xray_ping(default_ip, base_config, is_default=True)
-        
-        if default_result:
-            print("[V] Default config is WORKING. Proceeding to scan for more...")
-        else:
-            print("[X] WARNING: Your default config failed! Check your UUID/SNI/Path.")
-            choice = input("[?] Do you still want to continue scanning other IPs? (y/n): ")
-            if choice.lower() != 'y':
-                return
-    except Exception as e:
-        print(f"[!] Could not parse default IP from config: {e}")
-    print("="*50 + "\n")
-
+    safe_print(f"[*] Default IP found: {default_ip}")
+    default_result = xray_test(default_ip, BASE_PORT - 1, base_config, is_default=True)
+    
+    if default_result:
+        safe_print("[V] Default config is WORKING. Proceeding to scan for more...")
+    else:
+        safe_print("[X] WARNING: Your default config failed! Check your UUID/SNI/Path.")
+        choice = input("[?] Do you still want to continue scanning other IPs? (y/n): ")
+        if choice.lower() != 'y':
+            return
+            
+    safe_print("="*70 + "\n")
     ips_to_test = get_random_ips(FILE_NAME, SAMPLES_PER_SUBNET)
-    print(f"STEP 2: Testing {len(ips_to_test)} IPs from {FILE_NAME}...")
-
+    total_ips = len(ips_to_test)
+    safe_print(f"STEP 2: Testing all {total_ips} IPs to find the lowest ping...")
+    
     working_ips = []
+    checked = 0
+    
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
-        futures = {executor.submit(xray_ping, ip, base_config): ip for ip in ips_to_test}
+        futures = {
+            executor.submit(xray_test, ip, BASE_PORT + i, base_config): ip 
+            for i, ip in enumerate(ips_to_test)
+        }
         
         for future in concurrent.futures.as_completed(futures):
             result = future.result()
+            checked += 1
             if result:
                 working_ips.append(result)
-                if len(working_ips) >= TARGET_WORKING_IPS:
-                    print("\n[*] Target IP count reached.")
-                    break
+                
+            safe_print(f"--- Progress: {checked}/{total_ips} Checked | {len(working_ips)} Working IPs Found ---")
 
-    working_ips.sort(key=lambda x: x[1])
+    # --- THE MAGIC CHANGE IS HERE ---
+    # Sort all working IPs by Latency (Ascending), then Speed (Descending) as a tie-breaker
+    working_ips.sort(key=lambda x: (x[1], -x[2]))
     
-    print("\n" + "="*50)
-    print(f"{'IP Address':<20} | {'Latency'}")
-    print("-" * 50)
+    # Keep only the top N best IPs
+    if len(working_ips) > TARGET_WORKING_IPS:
+        working_ips = working_ips[:TARGET_WORKING_IPS]
     
-    # Save standard IPs
-    with open(OUTPUT_FILE, 'w') as f_ip, open(LINKS_FILE, 'w') as f_links:
-        for ip, lat in working_ips:
-            print(f"{ip:<20} | {lat}ms")
+    safe_print("\n" + "="*70)
+    safe_print(f"[*] Filtering complete. Here are the TOP {len(working_ips)} lowest ping connections:")
+    safe_print(f"{'IP Address':<18} | {'Latency':<10} | {'Download Speed'}")
+    safe_print("-" * 70)
+    
+    with open(OUTPUT_FILE, 'w') as f_ip, open(LINKS_FILE, 'w', encoding='utf-8') as f_links:
+        for ip, lat, speed in working_ips:
+            safe_print(f"{ip:<18} | {lat:<8}ms | {speed:.2f} Mbps")
             f_ip.write(f"{ip}\n")
-            
-            # Generate and save the VLESS Share Link
-            vless_url = generate_vless_url(ip, lat, base_config)
+            vless_url = generate_vless_url(ip, lat, speed, base_config)
             f_links.write(f"{vless_url}\n")
             
-    print("="*50)
-    print(f"[*] Done. Raw IPs saved to {OUTPUT_FILE}")
-    print(f"[*] Done. Copy-Paste Configs saved to {LINKS_FILE} <--- IMPORT THESE!")
+    safe_print("="*70)
+    safe_print(f"[*] Done. Top {len(working_ips)} raw IPs saved to {OUTPUT_FILE}")
+    safe_print(f"[*] Done. Top {len(working_ips)} VLESS configs sorted by ping saved to {LINKS_FILE}")
 
 if __name__ == '__main__':
     main()
