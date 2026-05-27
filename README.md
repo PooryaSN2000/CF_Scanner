@@ -1,20 +1,19 @@
----
+# 🚀 True Latency & Speed Xray IP Scanner (v2.0)
 
-# 🚀 True Latency Xray IP Scanner
+A powerful, multithreaded Python script designed to hunt down the lowest-latency, highest-bandwidth working IP addresses from large CIDR lists (e.g., Cloudflare IP ranges).
 
-A powerful, multithreaded Python script designed to hunt down the lowest-latency working IP addresses from large CIDR lists (e.g., Cloudflare IP ranges).
-
-Unlike standard ICMP ping tools or basic TCP socket checkers, this script **spawns actual Xray-core instances**. It dynamically injects test IPs into your personal VLESS/VMess configuration and routes real HTTP traffic through them. This guarantees that the IPs you find are not just online, but are actively bypassing restrictions and properly proxying traffic with your specific server settings.
+Unlike standard ICMP ping tools or basic TCP socket checkers, this script **spawns actual Xray-core instances**. It dynamically injects test IPs into your personal VLESS/VMess configuration, routes real HTTP traffic through them, and **downloads a test payload to calculate actual Megabits per second (Mbps)**. This guarantees that the IPs you find are not just online, but are actively bypassing restrictions and providing high-speed proxy connections.
 
 ---
 
 ## ✨ Features
 
-* **🎯 True Proxy Latency:** Tests actual proxy connections by routing an HTTP request (via local proxy) through the Xray core, giving you the real-world delay.
-* **🔗 Auto-Generated Share Links:** Automatically extracts your UUID, SNI, and paths to create ready-to-use `vless://` URLs. Just copy and paste them directly into v2rayN, v2rayNG, or Nekobox!
+* **🎯 True Proxy Latency & Speed:** Tests actual proxy connections by first checking HTTP latency, then downloading a 150KB payload from Cloudflare to measure real-world throughput (Mbps).
+* **📊 Exhaustive Search & Smart Sorting:** Tests your entire target list of IPs, then mathematically sorts the results to save only the absolute fastest connections (lowest ping + highest speed) rather than stopping at the first one that connects.
+* **📡 Live Thread-Safe Console:** Watch the scanner work in real-time with a clean, synchronized terminal feed. No more messy timeout errors or overlapping text.
+* **🔗 Auto-Generated Share Links:** Automatically extracts your UUID, SNI, and paths to create ready-to-use `vless://` URLs appended with Ping and Speed metrics. Just copy and paste them directly into v2rayN, v2rayNG, or Nekobox!
 * **🛡️ Default Sanity Check:** Automatically tests your default `config.json` IP first to ensure your UUID, SNI, and paths are correct before wasting time scanning thousands of IPs.
-* **🧠 Dynamic Config Injection:** Deep-copies your base configuration and securely swaps the target address and local ports in memory.
-* **⚡ Resource Managed:** Runs a controlled number of concurrent Xray subprocesses to prevent system freezing, automatically cleaning up temporary JSON files and dead processes.
+* **⚡ Resource Managed & Collision-Free:** Runs a controlled number of concurrent Xray subprocesses with mathematically unique ports to prevent collisions. Automatically sweeps and deletes temporary JSON files upon exit.
 * **📦 Zero Dependencies:** Built entirely with Python's standard library. No `requirements.txt` or `pip install` needed—just download and run!
 
 ---
@@ -70,46 +69,48 @@ You can customize the script's behavior by editing the variables at the top of `
 | Variable | Default | Description |
 | --- | --- | --- |
 | `FILE_NAME` | `'export.ipv4'` | The input file containing your CIDR ranges. |
-| `OUTPUT_FILE` | `'working_ips.txt'` | The file where the raw working IPs and latencies are saved. |
-| `LINKS_FILE` | `'vless_links.txt'` | The file where the auto-generated `vless://` share URLs are saved for quick import. |
+| `OUTPUT_FILE` | `'working_ips.txt'` | The file where the top raw working IPs are saved. |
+| `LINKS_FILE` | `'vless_links.txt'` | The file where the sorted `vless://` share URLs are saved for quick import. |
 | `CONFIG_TEMPLATE_FILE` | `'config.json'` | Your base Xray configuration file. |
 | `XRAY_PATH` | `'Xray-windows-64\\xray.exe'` | Path to your Xray executable. |
-| `MAX_IPS_TO_TEST` | `100` | Maximum number of total IPs to test. Set to 0 to test all generated IPs. |
-| `TARGET_WORKING_IPS` | `5` | The script halts automatically once it finds this many working IPs. |
+| `MAX_IPS_TO_TEST` | `200` | Total pool of randomized IPs to test exhaustively. |
+| `TARGET_WORKING_IPS` | `5` | The script saves only this many of the absolute *best* IPs from the results. |
 | `SAMPLES_PER_SUBNET` | `2` | Number of random IPs to mathematically sample from *each* subnet block. |
 | `MAX_THREADS` | `5` | Concurrent Xray instances. *Keep this low (5-15) as spawning full binaries is heavy.* |
-| `TIMEOUT` | `5.0` | Max seconds to wait for Xray to establish a connection and fetch the test URL. |
+| `PING_TIMEOUT` | `5.0` | Strict max seconds to wait for Xray to establish a connection and fetch the ping header. |
+| `SPEED_TIMEOUT` | `15.0` | Generous max seconds to wait for the script to download the payload for speed testing. |
 
 ---
 
 ## 🖥️ Example Output
 
 ```text
-[*] Template Loaded. Xray Path: Xray-windows-64\xray.exe
-==================================================
-STEP 1: Testing your default config.json address...
-[*] Default IP found in config: 104.18.223.224
-[DEFAULT-CHECK] 104.18.223.224: Starting Xray on port 54321...
-[DEFAULT-CHECK] 104.18.223.224: SUCCESS! Real Latency: 412ms
+======================================================================
+STEP 1: Testing default config.json address...
+[*] Default IP found: a.psnkali.ir
 [V] Default config is WORKING. Proceeding to scan for more...
-==================================================
+======================================================================
 
-STEP 2: Testing 20 IPs from export.ipv4...
-[SCAN] 172.64.19.2: Starting Xray on port 54322...
-[SCAN] 104.18.2.14: Starting Xray on port 54323...
-[SCAN] 172.64.19.2: SUCCESS! Real Latency: 285ms
-[SCAN] 104.18.2.14: SUCCESS! Real Latency: 310ms
+STEP 2: Testing all 200 IPs to find the lowest ping...
+[SCAN] 104.18.78.41    | Ping: 1390ms | Speed: 2.62 Mbps [SUCCESS]
+--- Progress: 1/200 Checked | 1 Working IPs Found ---
+[SCAN] 104.17.125.124  | Ping: 674 ms | Speed: 0.90 Mbps [SUCCESS]
+--- Progress: 2/200 Checked | 2 Working IPs Found ---
+[SCAN] 8.34.202.94     | Failed (Timeout / No Ping)
+--- Progress: 3/200 Checked | 2 Working IPs Found ---
+[SCAN] 66.81.247.11    | Ping: 711 ms | Speed: 2.22 Mbps [SUCCESS]
+--- Progress: 4/200 Checked | 3 Working IPs Found ---
 
-[*] Target IP count reached.
-
-==================================================
-IP Address           | Latency
---------------------------------------------------
-172.64.19.2          | 285ms
-104.18.2.14          | 310ms
-==================================================
-[*] Done. Raw IPs saved to working_ips.txt
-[*] Done. Copy-Paste Configs saved to vless_links.txt <--- IMPORT THESE!
+======================================================================
+[*] Filtering complete. Here are the TOP 3 lowest ping connections:
+IP Address         | Latency    | Download Speed
+----------------------------------------------------------------------
+104.17.125.124     | 674     ms | 0.90 Mbps
+66.81.247.11       | 711     ms | 2.22 Mbps
+104.18.78.41       | 1390    ms | 2.62 Mbps
+======================================================================
+[*] Done. Top 3 raw IPs saved to working_ips.txt
+[*] Done. Top 3 VLESS configs sorted by ping saved to vless_links.txt
 
 ```
 
